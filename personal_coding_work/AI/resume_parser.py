@@ -110,8 +110,8 @@ def process_resume(pdf_path, output_xml_path):
 
 if __name__ == "__main__":
     # Path to the PDF resume and desired XML output file
-    pdf_directory = "/path/to/your/resume/folder"
-    pdf_filename = "sample_resume.pdf"
+    pdf_directory = "resumes/"
+    pdf_filename = "resume.pdf"
     pdf_path = os.path.join(pdf_directory, pdf_filename)
     output_xml_path = os.path.join(pdf_directory, "resume_output.xml")
 

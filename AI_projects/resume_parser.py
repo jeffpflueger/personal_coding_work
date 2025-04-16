@@ -1,119 +1,120 @@
 import os
+import requests
 import pdf2image
 import easyocr
 import xml.etree.ElementTree as ET
 
 
+def download_from_google_drive(shareable_link, output_path):
+    """
+    Downloads a file from a Google Drive shareable link.
+    """
+    print("Downloading resume from Google Drive...")
+    
+    # Extract file ID from shareable link
+    if "id=" in shareable_link:
+        file_id = shareable_link.split("id=")[-1]
+    elif "file/d/" in shareable_link:
+        file_id = shareable_link.split("file/d/")[1].split("/")[0]
+    else:
+        raise ValueError("Invalid Google Drive link format.")
+
+    # Construct direct download URL
+    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    
+    response = requests.get(download_url)
+    if response.status_code != 200:
+        raise Exception("Failed to download the file from Google Drive.")
+
+    with open(output_path, 'wb') as f:
+        f.write(response.content)
+    
+    print(f"File saved to {output_path}")
+
+
 def convert_pdf_to_images(pdf_path):
-    """
-    Converts a PDF file into images, with each page represented as an image.
-    """
     print(f"Converting PDF '{pdf_path}' to images...")
-    images = pdf2image.convert_from_path(pdf_path)
-    return images
+    return pdf2image.convert_from_path(pdf_path)
 
 
 def extract_text_from_image(image):
-    """
-    Uses EasyOCR to extract text from an image.
-    """
     print("Performing OCR on the image...")
-    reader = easyocr.Reader(['en'])  # Set language to English
+    reader = easyocr.Reader(['en'], gpu=False)
     ocr_results = reader.readtext(image)
-    
-    # Collect the text from OCR results
-    extracted_text = "\n".join([text[1] for text in ocr_results])
-    return extracted_text
+    return "\n".join([text[1] for text in ocr_results])
 
 
 def parse_resume_to_xml(resume_text):
-    """
-    Takes the extracted resume text and organizes it into an XML format.
-    """
     root = ET.Element("Resume")
-
-    # Split the text into individual lines
     lines = resume_text.splitlines()
     
-    # Assuming the first line contains the name
-    name = lines[0] if len(lines) > 0 else ""
-    name_elem = ET.SubElement(root, "Name")
-    name_elem.text = name.strip()
+    name = lines[0] if lines else ""
+    ET.SubElement(root, "Name").text = name.strip()
 
-    # Assuming the second line contains contact information (email or phone)
-    contact_info = lines[1] if len(lines) > 1 else ""
-    contact_elem = ET.SubElement(root, "ContactInfo")
-    contact_elem.text = contact_info.strip()
+    contact = lines[1] if len(lines) > 1 else ""
+    ET.SubElement(root, "ContactInfo").text = contact.strip()
 
-    # Try to extract Education and Work Experience
-    education = []
-    work_experience = []
-
-    # Basic categorization based on keywords like 'Education' or 'Experience'
+    education, work_experience = [], []
     section = None
-    for line in lines[2:]:
-        if "education" in line.lower():
-            section = "Education"
-        elif "work experience" in line.lower() or "experience" in line.lower():
-            section = "WorkExperience"
-        
-        if section == "Education" and line.strip():
-            education.append(line.strip())
-        elif section == "WorkExperience" and line.strip():
-            work_experience.append(line.strip())
-    
-    # Add Education section to XML
-    education_elem = ET.SubElement(root, "Education")
-    for edu in education:
-        edu_elem = ET.SubElement(education_elem, "Entry")
-        edu_elem.text = edu
 
-    # Add Work Experience section to XML
-    work_experience_elem = ET.SubElement(root, "WorkExperience")
-    for work in work_experience:
-        work_elem = ET.SubElement(work_experience_elem, "Entry")
-        work_elem.text = work
+    for line in lines[2:]:
+        lower = line.lower()
+        if "education" in lower:
+            section = "Education"
+        elif "experience" in lower:
+            section = "WorkExperience"
+
+        if section == "Education":
+            education.append(line.strip())
+        elif section == "WorkExperience":
+            work_experience.append(line.strip())
+
+    edu_elem = ET.SubElement(root, "Education")
+    for e in education:
+        ET.SubElement(edu_elem, "Entry").text = e
+
+    work_elem = ET.SubElement(root, "WorkExperience")
+    for w in work_experience:
+        ET.SubElement(work_elem, "Entry").text = w
 
     return root
 
 
-def save_xml_to_file(xml_root, output_path):
-    """
-    Save the structured XML to a file.
-    """
-    tree = ET.ElementTree(xml_root)
-    tree.write(output_path)
+def save_xml(xml_root, output_path):
+    ET.ElementTree(xml_root).write(output_path)
+    print(f"XML saved to: {output_path}")
 
 
-def process_resume(pdf_path, output_xml_path):
+def process_resume_from_drive(drive_link, download_dir):
     """
-    Main function that takes a PDF resume, extracts text using OCR, 
-    parses it, and saves it as an XML file.
+    Downloads a resume from Google Drive, processes it, and generates XML.
     """
-    print(f"Processing resume from PDF: {pdf_path}")
-    
-    # Convert PDF to images
+    os.makedirs(download_dir, exist_ok=True)
+
+    pdf_path = os.path.join(download_dir, "resume.pdf")
+    xml_path = os.path.join(download_dir, "resume.xml")
+
+    # Step 1: Download the file
+    download_from_google_drive(drive_link, pdf_path)
+
+    # Step 2: Convert to images
     images = convert_pdf_to_images(pdf_path)
-    
-    # Extract text from each page using OCR
-    resume_text = ""
-    for image in images:
-        resume_text += extract_text_from_image(image)
-    
-    # Parse the extracted text and generate XML
-    xml_root = parse_resume_to_xml(resume_text)
 
-    # Save the parsed XML to a file
-    save_xml_to_file(xml_root, output_xml_path)
-    print(f"XML resume saved to: {output_xml_path}")
+    # Step 3: OCR
+    full_text = ""
+    for img in images:
+        full_text += extract_text_from_image(img)
+
+    # Step 4: Parse text to XML
+    xml_root = parse_resume_to_xml(full_text)
+
+    # Step 5: Save XML
+    save_xml(xml_root, xml_path)
 
 
 if __name__ == "__main__":
-    # Path to the PDF resume and desired XML output file
-    pdf_directory = "resumes/"
-    pdf_filename = "resume.pdf"
-    pdf_path = os.path.join(pdf_directory, pdf_filename)
-    output_xml_path = os.path.join(pdf_directory, "resume_output.xml")
+    # Replace this with the Google Drive shareable link
+    drive_link = "https://drive.google.com/file/d/1yOURFILEIDHERE/view?usp=sharing"
+    output_dir = "/resumes"
 
-    # Process the resume
-    process_resume(pdf_path, output_xml_path)
+    process_resume_from_drive(drive_link, output_dir)

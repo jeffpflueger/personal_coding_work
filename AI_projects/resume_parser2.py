@@ -3,16 +3,12 @@ import numpy as np
 import requests
 import pdf2image
 import easyocr
-import xml.etree.ElementTree as ET
+import json
 
 
 def download_from_google_drive(shareable_link, output_path):
-    """
-    Downloads a file from a Google Drive shareable link.
-    """
     print("Downloading resume from Google Drive...")
-    
-    # Extract file ID from shareable link
+
     if "id=" in shareable_link:
         file_id = shareable_link.split("id=")[-1]
     elif "file/d/" in shareable_link:
@@ -20,16 +16,15 @@ def download_from_google_drive(shareable_link, output_path):
     else:
         raise ValueError("Invalid Google Drive link format.")
 
-    # Construct direct download URL
     download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    
+
     response = requests.get(download_url)
     if response.status_code != 200:
         raise Exception("Failed to download the file from Google Drive.")
 
     with open(output_path, 'wb') as f:
         f.write(response.content)
-    
+
     print(f"File saved to {output_path}")
 
 
@@ -41,21 +36,16 @@ def convert_pdf_to_images(pdf_path):
 def extract_text_from_image(image):
     print("Performing OCR on the image...")
     reader = easyocr.Reader(['en'], gpu=False)
-    image_np = np.array(image) # convert PIL image to a NumPy array
+    image_np = np.array(image)  # convert PIL image to a NumPy array
     ocr_results = reader.readtext(image_np)
     return "\n".join([text[1] for text in ocr_results])
 
 
-def parse_resume_to_xml(resume_text):
-    root = ET.Element("Resume")
+def parse_resume_to_json(resume_text):
     lines = resume_text.splitlines()
-    
+
     name = lines[0] if lines else ""
-    ET.SubElement(root, "Name").text = name.strip()
-
     contact = lines[1] if len(lines) > 1 else ""
-    ET.SubElement(root, "ContactInfo").text = contact.strip()
-
     education, work_experience = [], []
     section = None
 
@@ -63,59 +53,87 @@ def parse_resume_to_xml(resume_text):
         lower = line.lower()
         if "education" in lower:
             section = "Education"
+            continue
         elif "experience" in lower:
             section = "WorkExperience"
+            continue
 
-        if section == "Education":
-            education.append(line.strip())
-        elif section == "WorkExperience":
-            work_experience.append(line.strip())
+        if section == "Education" and line.strip():
+            education.append({
+                "institution": line.strip(),
+                "area": "",
+                "studyType": "",
+                "startDate": "",
+                "endDate": "",
+                "gpa": "",
+                "courses": []
+            })
 
-    edu_elem = ET.SubElement(root, "Education")
-    for e in education:
-        ET.SubElement(edu_elem, "Entry").text = e
+        elif section == "WorkExperience" and line.strip():
+            work_experience.append({
+                "company": line.strip(),
+                "position": "",
+                "website": "",
+                "startDate": "",
+                "endDate": "",
+                "summary": "",
+                "highlights": []
+            })
 
-    work_elem = ET.SubElement(root, "WorkExperience")
-    for w in work_experience:
-        ET.SubElement(work_elem, "Entry").text = w
+    resume_json = {
+        "basics": {
+            "name": name.strip(),
+            "email": "",  # Optional: Extract with regex
+            "phone": contact.strip(),
+            "summary": "",
+            "location": {},
+            "profiles": []
+        },
+        "work": work_experience,
+        "education": education,
+        "skills": [],
+        "projects": [],
+        "certificates": [],
+        "awards": [],
+        "languages": [],
+        "interests": [],
+        "references": []
+    }
 
-    return root
+    return resume_json
 
 
-def save_xml(xml_root, output_path):
-    ET.ElementTree(xml_root).write(output_path)
-    print(f"XML saved to: {output_path}")
+def save_json(json_data, output_path):
+    with open(output_path, 'w') as f:
+        json.dump(json_data, f, indent=2)
+    print(f"JSON Resume saved to: {output_path}")
 
 
 def process_resume_from_drive(drive_link, download_dir):
-    """
-    Downloads a resume from Google Drive, processes it, and generates XML.
-    """
     os.makedirs(download_dir, exist_ok=True)
 
     pdf_path = os.path.join(download_dir, "resume.pdf")
-    xml_path = os.path.join(download_dir, "resume.xml")
+    json_path = os.path.join(download_dir, "resume.json")
 
-    # Step 1: Download the file
+    # Step 1: Download
     download_from_google_drive(drive_link, pdf_path)
 
-    # Step 2: Convert to images
+    # Step 2: Convert PDF to images
     images = convert_pdf_to_images(pdf_path)
 
     # Step 3: OCR
     full_text = ""
     for img in images:
-        full_text += extract_text_from_image(img)
+        full_text += extract_text_from_image(img) + "\n"
 
-    # Step 4: Parse text to XML
-    xml_root = parse_resume_to_xml(full_text)
+    # Step 4: Parse to JSON Resume
+    resume_json = parse_resume_to_json(full_text)
 
-    # Step 5: Save XML
-    save_xml(xml_root, xml_path)
+    # Step 5: Save JSON
+    save_json(resume_json, json_path)
 
 
 if __name__ == "__main__":
-    # Replace this with the Google Drive shareable link
     drive_link = "https://drive.google.com/file/d/1zv0MJRPfimDbnij7xBCG6G9v86RIMe2i/view?usp=sharing"
     output_dir = "/home/jeff/Documents/personal_coding_work/AI_projects/resumes"
 

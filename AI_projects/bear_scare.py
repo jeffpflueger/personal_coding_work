@@ -54,6 +54,7 @@ class VideoStream:
         self.stopped = True
 
 # Cleanup old videos
+
 def cleanup_old_videos():
     video_files = sorted(
         [os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR) if f.endswith('.avi')],
@@ -64,6 +65,7 @@ def cleanup_old_videos():
         video_files.pop(0)
 
 # Record video
+
 def record_bear_video(videostream, fps=30):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.avi')
@@ -149,6 +151,8 @@ freq = cv2.getTickFrequency()
 videostream = VideoStream(resolution=(imW, imH), framerate=30).start()
 time.sleep(1)
 
+recording = False
+
 while True:
     t1 = cv2.getTickCount()
     frame1 = videostream.read()
@@ -166,6 +170,8 @@ while True:
     boxes = interpreter.get_tensor(output_details[0]['index'])[0]
     classes = interpreter.get_tensor(output_details[1]['index'])[0]
     scores = interpreter.get_tensor(output_details[2]['index'])[0]
+
+    bear_detected = False
 
     for i in range(len(scores)):
         if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
@@ -186,11 +192,16 @@ while True:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
 
             if object_name == "bear" and int(scores[i]*100) > 55:
-                print("BEAR!!!! - Score:" + str(int(scores[i]*100)))
-                GPIO.output(led, GPIO.HIGH)
-                GPIO.output(led2, GPIO.HIGH)
-                led_count = 0
-                record_bear_video(videostream)
+                bear_detected = True
+
+    if bear_detected and not recording:
+        print("BEAR!!!! - Recording Started")
+        GPIO.output(led, GPIO.HIGH)
+        GPIO.output(led2, GPIO.HIGH)
+        led_count = 0
+        recording = True
+        record_bear_video(videostream)
+        recording = False
 
     led_count += 1
     if led_count > 10:

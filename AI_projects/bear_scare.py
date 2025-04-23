@@ -1,12 +1,16 @@
+# Bear Scare Tensorflow-trained Classifier and OpenCV with Video Recording #
+
 import os
 import argparse
 import cv2
 import numpy as np
 import sys
 import time
+from threading import Thread, Lock
 import importlib.util
 import RPi.GPIO as GPIO
 from datetime import datetime
+from queue import Queue
 
 # Video settings
 VIDEO_DURATION = 15  # seconds
@@ -23,6 +27,11 @@ GPIO.setwarnings(False)
 GPIO.setup(led, GPIO.OUT)
 GPIO.setup(led2, GPIO.OUT)
 
+# Frame queue for recording
+frame_queue = Queue()
+recording_lock = Lock()
+recording = False
+
 # VideoStream class
 class VideoStream:
     def __init__(self, resolution=(640, 480), framerate=30):
@@ -34,11 +43,14 @@ class VideoStream:
         self.stopped = False
 
     def start(self):
-        self.stopped = False
+        Thread(target=self.update, args=(), daemon=True).start()
         return self
 
+    def update(self):
+        while not self.stopped:
+            (self.grabbed, self.frame) = self.stream.read()
+
     def read(self):
-        (self.grabbed, self.frame) = self.stream.read()
         return self.frame
 
     def stop(self):
@@ -49,38 +61,47 @@ class VideoStream:
 
 def cleanup_old_videos():
     video_files = sorted(
-        [os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR) if f.endswith('.avi')],
+        [os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR) if f.endswith('.mp4')],
         key=os.path.getctime
     )
     while len(video_files) > MAX_VIDEO_FILES:
         os.remove(video_files[0])
         video_files.pop(0)
 
-# Record video in background
+# Record video from queue in background
 
-def record_bear_video(videostream, fps=30):
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.avi')
-    frame_width = int(videostream.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(videostream.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'XVID'), fps, (frame_width, frame_height))
+def record_bear_video_async():
+    def _record():
+        global recording
+        with recording_lock:
+            if recording:
+                return
+            recording = True
 
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.7
-    font_color = (0, 0, 255)
-    thickness = 2
-    line_type = cv2.LINE_AA
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.mp4')
+        frame_width = 640
+        frame_height = 480
+        out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 15, (frame_width, frame_height))
 
-    start_time = time.time()
-    while time.time() - start_time < VIDEO_DURATION:
-        frame = videostream.read()
-        if frame is not None:
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            cv2.putText(frame, "Bear Scare Horn Activated", (10, 30), font, font_scale, font_color, thickness, line_type)
-            cv2.putText(frame, now, (10, 60), font, font_scale, font_color, thickness, line_type)
-            out.write(frame)
-    out.release()
-    cleanup_old_videos()
+        start_time = time.time()
+        while time.time() - start_time < VIDEO_DURATION:
+            if not frame_queue.empty():
+                frame = frame_queue.get()
+                if frame is not None:
+                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    cv2.putText(frame, "Bear Scare Horn Activated", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+                    cv2.putText(frame, now, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+                    out.write(frame)
+            else:
+                time.sleep(0.01)
+
+        out.release()
+        cleanup_old_videos()
+        with recording_lock:
+            recording = False
+
+    Thread(target=_record, daemon=True).start()
 
 # Argument parsing
 parser = argparse.ArgumentParser()
@@ -88,7 +109,7 @@ parser.add_argument('--modeldir', required=True)
 parser.add_argument('--graph', default='detect.tflite')
 parser.add_argument('--labels', default='labelmap.txt')
 parser.add_argument('--threshold', default=0.65)
-parser.add_argument('--resolution', default='640x360')  # Reduced resolution
+parser.add_argument('--resolution', default='800x480')
 parser.add_argument('--edgetpu', action='store_true')
 args = parser.parse_args()
 
@@ -140,16 +161,21 @@ input_std = 127.5
 
 frame_rate_calc = 1
 freq = cv2.getTickFrequency()
-videostream = VideoStream(resolution=(imW, imH), framerate=15).start()  # Lower FPS to reduce load
+videostream = VideoStream(resolution=(imW, imH), framerate=30).start()
 time.sleep(1)
 
-led_count = 0
-frame_counter = 0  # Counter to skip frames
-
 while True:
+    global led_count
+
     t1 = cv2.getTickCount()
     frame1 = videostream.read()
     frame = frame1.copy()
+
+    # Add frame to queue for recording if active
+    with recording_lock:
+        if recording and frame_queue.qsize() < 450:
+            frame_queue.put(frame.copy())
+
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame_resized = cv2.resize(frame_rgb, (width, height))
     input_data = np.expand_dims(frame_resized, axis=0)
@@ -166,36 +192,35 @@ while True:
 
     bear_detected = False
 
-    # Skip frames for object detection to reduce CPU load
-    frame_counter += 1
-    if frame_counter % 3 == 0:  # Process every 3rd frame
-        for i in range(len(scores)):
-            if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
-                ymin = int(max(1, (boxes[i][0] * imH)))
-                xmin = int(max(1, (boxes[i][1] * imW)))
-                ymax = int(min(imH, (boxes[i][2] * imH)))
-                xmax = int(min(imW, (boxes[i][3] * imW)))
-                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (10, 255, 0), 2)
+    for i in range(len(scores)):
+        if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
+            ymin = int(max(1, (boxes[i][0] * imH)))
+            xmin = int(max(1, (boxes[i][1] * imW)))
+            ymax = int(min(imH, (boxes[i][2] * imH)))
+            xmax = int(min(imW, (boxes[i][3] * imW)))
+            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (10, 255, 0), 2)
 
-                object_name = labels[int(classes[i])]
-                label = '%s: %d%%' % (object_name, int(scores[i]*100))
-                labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-                label_ymin = max(ymin, labelSize[1] + 10)
-                cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10),
-                              (xmin+labelSize[0], label_ymin+baseLine-10),
-                              (255, 255, 255), cv2.FILLED)
-                cv2.putText(frame, label, (xmin, label_ymin-7),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+            object_name = labels[int(classes[i])]
+            label = '%s: %d%%' % (object_name, int(scores[i]*100))
+            labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            label_ymin = max(ymin, labelSize[1] + 10)
+            cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10),
+                          (xmin+labelSize[0], label_ymin+baseLine-10),
+                          (255, 255, 255), cv2.FILLED)
+            cv2.putText(frame, label, (xmin, label_ymin-7),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
 
-                if object_name == "bear" and int(scores[i]*100) > 55:
-                    bear_detected = True
+            if object_name == "bear" and int(scores[i]*100) > 55:
+                bear_detected = True
 
     if bear_detected:
-        print("BEAR!!!! - Recording Started")
-        GPIO.output(led, GPIO.HIGH)
-        GPIO.output(led2, GPIO.HIGH)
-        led_count = 0
-        record_bear_video(videostream)
+        with recording_lock:
+            if not recording:
+                print("BEAR!!!! - Recording Started")
+                GPIO.output(led, GPIO.HIGH)
+                GPIO.output(led2, GPIO.HIGH)
+                led_count = 0
+                record_bear_video_async()
 
     led_count += 1
     if led_count > 10:
@@ -212,13 +237,13 @@ while True:
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2, cv2.LINE_AA)
 
     cv2.imshow('Object detector', frame)
-
     t2 = cv2.getTickCount()
-    time_elapsed = (t2 - t1) / freq
-    frame_rate_calc = 1 / time_elapsed
+    time1 = (t2 - t1) / freq
+    frame_rate_calc = 1 / time1
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    if cv2.waitKey(1) == ord('q'):
         break
 
 cv2.destroyAllWindows()
 videostream.stop()
+GPIO.cleanup()

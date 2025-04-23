@@ -10,9 +10,10 @@ from threading import Thread
 import importlib.util
 import RPi.GPIO as GPIO
 from datetime import datetime
+from queue import Queue
 
 # Video settings
-VIDEO_DURATION = 15  # seconds (reduced from 30)
+VIDEO_DURATION = 15  # seconds
 VIDEO_DIR = os.path.join(os.getcwd(), "bear_videos")
 MAX_VIDEO_FILES = 100
 os.makedirs(VIDEO_DIR, exist_ok=True)
@@ -26,6 +27,9 @@ GPIO.setwarnings(False)
 GPIO.setup(led, GPIO.OUT)
 GPIO.setup(led2, GPIO.OUT)
 
+# Frame queue for recording
+frame_queue = Queue()
+
 # VideoStream class
 class VideoStream:
     def __init__(self, resolution=(640, 480), framerate=30):
@@ -37,14 +41,11 @@ class VideoStream:
         self.stopped = False
 
     def start(self):
-        Thread(target=self.update, args=()).start()
+        Thread(target=self.update, args=(), daemon=True).start()
         return self
 
     def update(self):
-        while True:
-            if self.stopped:
-                self.stream.release()
-                return
+        while not self.stopped:
             (self.grabbed, self.frame) = self.stream.read()
 
     def read(self):
@@ -52,43 +53,42 @@ class VideoStream:
 
     def stop(self):
         self.stopped = True
+        self.stream.release()
 
 # Cleanup old videos
 
 def cleanup_old_videos():
     video_files = sorted(
-        [os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR) if f.endswith('.avi')],
+        [os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR) if f.endswith('.mp4')],
         key=os.path.getctime
     )
     while len(video_files) > MAX_VIDEO_FILES:
         os.remove(video_files[0])
         video_files.pop(0)
 
-# Record video
+# Record video from queue in background
 
-def record_bear_video(videostream, fps=30):
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.avi')
-    frame_width = int(videostream.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(videostream.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'XVID'), fps, (frame_width, frame_height))
+def record_bear_video_async():
+    def _record():
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.mp4')
+        frame_width = 640
+        frame_height = 480
+        out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 20, (frame_width, frame_height))
 
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.7
-    font_color = (0, 0, 255)
-    thickness = 2
-    line_type = cv2.LINE_AA
+        start_time = time.time()
+        while time.time() - start_time < VIDEO_DURATION:
+            if not frame_queue.empty():
+                frame = frame_queue.get()
+                if frame is not None:
+                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    cv2.putText(frame, "Bear Scare Horn Activated", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+                    cv2.putText(frame, now, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+                    out.write(frame)
+        out.release()
+        cleanup_old_videos()
 
-    start_time = time.time()
-    while time.time() - start_time < VIDEO_DURATION:
-        frame = videostream.read()
-        if frame is not None:
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            cv2.putText(frame, "Bear Scare Horn Activated", (10, 30), font, font_scale, font_color, thickness, line_type)
-            cv2.putText(frame, now, (10, 60), font, font_scale, font_color, thickness, line_type)
-            out.write(frame)
-    out.release()
-    cleanup_old_videos()
+    Thread(target=_record, daemon=True).start()
 
 # Argument parsing
 parser = argparse.ArgumentParser()
@@ -151,10 +151,17 @@ freq = cv2.getTickFrequency()
 videostream = VideoStream(resolution=(imW, imH), framerate=30).start()
 time.sleep(1)
 
+recording = False
+
 while True:
     t1 = cv2.getTickCount()
     frame1 = videostream.read()
     frame = frame1.copy()
+
+    # Add frame to queue for recording
+    if recording:
+        frame_queue.put(frame.copy())
+
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame_resized = cv2.resize(frame_rgb, (width, height))
     input_data = np.expand_dims(frame_resized, axis=0)
@@ -192,12 +199,14 @@ while True:
             if object_name == "bear" and int(scores[i]*100) > 55:
                 bear_detected = True
 
-    if bear_detected:
+    if bear_detected and not recording:
         print("BEAR!!!! - Recording Started")
         GPIO.output(led, GPIO.HIGH)
         GPIO.output(led2, GPIO.HIGH)
         led_count = 0
-        record_bear_video(videostream)
+        recording = True
+        record_bear_video_async()
+        Thread(target=lambda: (time.sleep(VIDEO_DURATION), frame_queue.queue.clear(), globals().update(recording=False)), daemon=True).start()
 
     led_count += 1
     if led_count > 10:

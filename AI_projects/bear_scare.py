@@ -98,7 +98,7 @@ def detect_bear(frame, interpreter, input_details, output_details):
     return boxes, classes, scores
 
 # Load TensorFlow Lite model
-model_path = "bear_detector.tflite"  # Path to your TensorFlow Lite model
+model_path = "Sample_TFLite_model/detect.tflite"  # Path to your TensorFlow Lite model
 interpreter = tf.lite.Interpreter(model_path=model_path)
 interpreter.allocate_tensors()
 

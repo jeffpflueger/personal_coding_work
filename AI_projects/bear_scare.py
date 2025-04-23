@@ -1,19 +1,17 @@
-# Bear Scare Tensorflow-trained Classifier and OpenCV with Video Recording #
-
 import os
 import argparse
 import cv2
 import numpy as np
 import sys
 import time
-from threading import Thread, Lock
 import importlib.util
 import RPi.GPIO as GPIO
 from datetime import datetime
-from queue import Queue
 import shutil
+import tensorflow as tf
+from tflite_runtime.interpreter import Interpreter
 
-# Video settings
+# Constants
 VIDEO_DURATION = 15  # seconds
 VIDEO_DIR = os.path.join(os.getcwd(), "bear_videos")
 DISK_USAGE_THRESHOLD = 85  # percent
@@ -27,38 +25,50 @@ GPIO.setwarnings(False)
 GPIO.setup(led, GPIO.OUT)
 GPIO.setup(led2, GPIO.OUT)
 
-# Frame queue for recording
-frame_queue = Queue()
-recording_lock = Lock()
-recording = False
+# Setup camera
+camera = cv2.VideoCapture(0)
+camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# VideoStream class
-class VideoStream:
-    def __init__(self, resolution=(640, 480), framerate=30):
-        self.stream = cv2.VideoCapture(0)
-        self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        self.stream.set(3, resolution[0])
-        self.stream.set(4, resolution[1])
-        (self.grabbed, self.frame) = self.stream.read()
-        self.stopped = False
+# Toggle streaming control
+STREAMING_ENABLED = False  # Set to True to enable streaming
 
-    def start(self):
-        Thread(target=self.update, args=(), daemon=True).start()
-        return self
+# Load TFLite model
+def load_model(model_path):
+    interpreter = Interpreter(model_path=Sample_TFLite_model)
+    interpreter.allocate_tensors()
+    return interpreter
 
-    def update(self):
-        while not self.stopped:
-            (self.grabbed, self.frame) = self.stream.read()
+# Preprocess image for model input
+def preprocess_image(image):
+    # Resize image to match model input size
+    image = cv2.resize(image, (300, 300))
+    image = np.expand_dims(image, axis=0)
+    image = image.astype(np.float32)
+    return image
 
-    def read(self):
-        return self.frame
+# Perform detection using the model
+def detect_bear(interpreter, image):
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
 
-    def stop(self):
-        self.stopped = True
-        self.stream.release()
+    image = preprocess_image(image)
 
-# Cleanup old videos based on disk space
+    # Set input tensor
+    interpreter.set_tensor(input_details[0]['index'], image)
 
+    # Run inference
+    interpreter.invoke()
+
+    # Get output tensor
+    boxes = interpreter.get_tensor(output_details[0]['index'])[0]  # bounding boxes
+    classes = interpreter.get_tensor(output_details[1]['index'])[0]  # class IDs
+    scores = interpreter.get_tensor(output_details[2]['index'])[0]  # scores
+
+    return boxes, classes, scores
+
+# Cleanup old videos if disk space is high
 def cleanup_old_videos():
     total, used, free = shutil.disk_usage(VIDEO_DIR)
     percent_used = used / total * 100
@@ -74,74 +84,67 @@ def cleanup_old_videos():
         total, used, free = shutil.disk_usage(VIDEO_DIR)
         percent_used = used / total * 100
 
-# Record video from queue in background
+# Record the bear video
+def record_bear_video():
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.mp4')
+    frame_width = int(camera.get(3))
+    frame_height = int(camera.get(4))
+    out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'X264'), 15, (frame_width, frame_height))
 
-def record_bear_video_async():
-    def _record():
-        global recording
-        with recording_lock:
-            if recording:
-                return
-            recording = True
+    start_time = time.time()
+    while time.time() - start_time < VIDEO_DURATION:
+        ret, frame = camera.read()
+        if not ret:
+            break
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cv2.putText(frame, "Bear Scare Horn Activated", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(frame, now, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        out.write(frame)
+    out.release()
+    cleanup_old_videos()
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.mp4')
-        frame_width = 640
-        frame_height = 480
-        out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'X264'), 15, (frame_width, frame_height))
+# Main loop for detection and streaming
+def main(model_path):
+    interpreter = load_model(model_path)
 
-        start_time = time.time()
-        while time.time() - start_time < VIDEO_DURATION:
-            if not frame_queue.empty():
-                frame = frame_queue.get()
-                if frame is not None:
-                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    cv2.putText(frame, "Bear Scare Horn Activated", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-                    cv2.putText(frame, now, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-                    out.write(frame)
-            else:
-                time.sleep(0.01)
+    try:
+        while True:
+            ret, frame = camera.read()
+            if not ret:
+                continue
 
-        out.release()
-        cleanup_old_videos()
-        with recording_lock:
-            recording = False
+            # Perform bear detection using TFLite model
+            boxes, classes, scores = detect_bear(interpreter, frame)
 
-    Thread(target=_record, daemon=True).start()
+            bear_detected = False
+            for i in range(len(scores)):
+                if scores[i] > 0.5:  # Adjust score threshold as necessary
+                    bear_detected = True
+                    y_min, x_min, y_max, x_max = boxes[i]
+                    cv2.rectangle(frame, (int(x_min * 640), int(y_min * 480)), (int(x_max * 640), int(y_max * 480)), (0, 255, 0), 2)
 
-# Start video stream
-videostream = VideoStream().start()
-time.sleep(1)
+            if bear_detected:
+                GPIO.output(led, GPIO.HIGH)
+                GPIO.output(led2, GPIO.HIGH)
+                record_bear_video()
+                GPIO.output(led, GPIO.LOW)
+                GPIO.output(led2, GPIO.LOW)
 
-while True:
-    frame = videostream.read()
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_resized = cv2.resize(frame_rgb, (300, 300))
-    input_data = np.expand_dims(frame_resized, axis=0)
+            # If streaming is enabled, show the frame
+            if STREAMING_ENABLED:
+                cv2.imshow('Bear Detection Stream', frame)
 
-    # Simulate detection logic (replace this with actual TensorFlow Lite detection)
-    detected = np.random.rand() > 0.98  # Simulated detection
+            # Quit by pressing 'q'
+            if cv2.waitKey(1) == ord('q'):
+                break
 
-    if detected and not recording:
-        GPIO.output(led, GPIO.HIGH)
-        GPIO.output(led2, GPIO.HIGH)
-        record_bear_video_async()
-        print("Bear detected! Starting video recording...")
-        time.sleep(2)  # Keep horn on briefly
-        GPIO.output(led, GPIO.LOW)
-        GPIO.output(led2, GPIO.LOW)
+    except KeyboardInterrupt:
+        print("Exiting")
 
-    # Add current frame to the recording queue
-    if recording:
-        frame_queue.put(frame.copy())
+    camera.release()
+    cv2.destroyAllWindows()
 
-    # Draw streaming text
-    cv2.putText(frame, "Bear Scare Monitoring", (10, 460), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-    cv2.imshow('Object detector', frame)
-
-    if cv2.waitKey(1) == ord('q'):
-        break
-
-videostream.stop()
-cv2.destroyAllWindows()
-GPIO.cleanup()
+if __name__ == "__main__":
+    model_path = "your_model.tflite"  # Specify the correct path to your TFLite model
+    main(model_path)

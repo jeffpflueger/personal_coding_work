@@ -10,7 +10,7 @@ from datetime import datetime
 import RPi.GPIO as GPIO
 
 # Settings
-VIDEO_DURATION = 15  # seconds
+VIDEO_DURATION = 5  # seconds
 VIDEO_DIR = "bear_videos"
 MAX_VIDEOS = 100
 stream_display = False  # Toggle streaming display

@@ -12,7 +12,7 @@ import RPi.GPIO as GPIO
 from datetime import datetime
 
 # Video settings
-VIDEO_DURATION = 30  # seconds
+VIDEO_DURATION = 15  # seconds (reduced from 30)
 VIDEO_DIR = os.path.join(os.getcwd(), "bear_videos")
 MAX_VIDEO_FILES = 100
 os.makedirs(VIDEO_DIR, exist_ok=True)
@@ -71,15 +71,15 @@ def record_bear_video(videostream, fps=30):
     filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.avi')
     frame_width = int(videostream.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(videostream.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'MJPG'), fps, (frame_width, frame_height))
+    out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'XVID'), fps, (frame_width, frame_height))
 
-    start_time = time.time()
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.7
     font_color = (0, 0, 255)
     thickness = 2
     line_type = cv2.LINE_AA
 
+    start_time = time.time()
     while time.time() - start_time < VIDEO_DURATION:
         frame = videostream.read()
         if frame is not None:
@@ -151,8 +151,6 @@ freq = cv2.getTickFrequency()
 videostream = VideoStream(resolution=(imW, imH), framerate=30).start()
 time.sleep(1)
 
-recording = False
-
 while True:
     t1 = cv2.getTickCount()
     frame1 = videostream.read()
@@ -194,14 +192,12 @@ while True:
             if object_name == "bear" and int(scores[i]*100) > 55:
                 bear_detected = True
 
-    if bear_detected and not recording:
+    if bear_detected:
         print("BEAR!!!! - Recording Started")
         GPIO.output(led, GPIO.HIGH)
         GPIO.output(led2, GPIO.HIGH)
         led_count = 0
-        recording = True
         record_bear_video(videostream)
-        recording = False
 
     led_count += 1
     if led_count > 10:
@@ -227,3 +223,4 @@ while True:
 
 cv2.destroyAllWindows()
 videostream.stop()
+GPIO.cleanup()

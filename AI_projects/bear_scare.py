@@ -20,7 +20,7 @@ FRAME_BUFFER_SIZE = FRAME_RATE * FRAME_BUFFER_SECONDS
 STREAMING_ENABLED = False  # Toggle for streaming window
 use_TPU = False
 
-MODEL_NAME = 'model'
+MODEL_NAME = 'Sample_TFLite_model'
 GRAPH_NAME = 'detect.tflite'
 LABELMAP_NAME = 'labelmap.txt'
 min_conf_threshold = 0.5

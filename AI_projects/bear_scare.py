@@ -1,4 +1,3 @@
-# Imports
 import os
 import cv2
 import numpy as np
@@ -7,11 +6,13 @@ from threading import Thread
 import shutil
 from datetime import datetime
 import RPi.GPIO as GPIO
+import tensorflow as tf
 
 # Constants
 VIDEO_DURATION = 30  # seconds
 VIDEO_DIR = "bear_videos"
 MAX_VIDEOS = 100
+STREAMING_ENABLED = False  # Toggle for streaming, default is off
 
 # Set up GPIO
 led = 40
@@ -76,8 +77,34 @@ def record_bear_video(videostream, fps=30):
     print(f"[INFO] Video saved: {filename}")
     cleanup_old_videos()
 
-# TensorFlow Lite & OpenCV setup (same as before)
-# ...
+# TensorFlow Lite model inference (replacing the dummy function)
+def detect_bear(frame, interpreter, input_details, output_details):
+    # Preprocess frame
+    resized_frame = cv2.resize(frame, (300, 300))
+    input_data = np.expand_dims(resized_frame, axis=0)
+    input_data = np.float32(input_data)
+
+    # Set input tensor
+    interpreter.set_tensor(input_details[0]['index'], input_data)
+    
+    # Run inference
+    interpreter.invoke()
+
+    # Get output tensors
+    boxes = interpreter.get_tensor(output_details[0]['index'])[0]  # Bounding boxes
+    classes = interpreter.get_tensor(output_details[1]['index'])[0]  # Class labels
+    scores = interpreter.get_tensor(output_details[2]['index'])[0]  # Confidence scores
+
+    return boxes, classes, scores
+
+# Load TensorFlow Lite model
+model_path = "bear_detector.tflite"  # Path to your TensorFlow Lite model
+interpreter = tf.lite.Interpreter(model_path=model_path)
+interpreter.allocate_tensors()
+
+# Get input and output details
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
 
 # Initialize videostream
 videostream = VideoStream(resolution=(800, 480), framerate=30).start()
@@ -87,12 +114,14 @@ time.sleep(1)
 while True:
     t1 = cv2.getTickCount()
     frame = videostream.read()
-    # Preprocess frame and run detection as before...
-    # Set `object_name = labels[int(classes[i])]` in loop
+    
+    # Run object detection using TensorFlow Lite model
+    boxes, classes, scores = detect_bear(frame, interpreter, input_details, output_details)
 
+    # Iterate through detections
     for i in range(len(scores)):
-        if scores[i] > min_conf_threshold:
-            object_name = labels[int(classes[i])]
+        if scores[i] > 0.5:  # Adjust score threshold as needed
+            object_name = "bear"  # Replace with actual label
             if object_name == "bear" and int(scores[i] * 100) > 55:
                 print("[ALERT] BEAR DETECTED!")
                 GPIO.output(led, GPIO.HIGH)
@@ -112,7 +141,11 @@ while True:
         GPIO.output(led, GPIO.HIGH)
         GPIO.output(led2, GPIO.HIGH)
 
-    cv2.imshow('Object detector', frame)
+    # If streaming is enabled, show the frame
+    if STREAMING_ENABLED:
+        cv2.imshow('Object detector', frame)
+
+    # Quit by pressing 'q'
     if cv2.waitKey(1) == ord('q'):
         break
 

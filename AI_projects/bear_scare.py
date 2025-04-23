@@ -1,5 +1,3 @@
-# Bear Scare Tensorflow-trained Classifier and OpenCV with Video Recording #
-
 import os
 import argparse
 import cv2
@@ -10,7 +8,7 @@ from threading import Thread
 import importlib.util
 import RPi.GPIO as GPIO
 from datetime import datetime
-from queue import Queue
+import queue
 
 # Video settings
 VIDEO_DURATION = 15  # seconds
@@ -26,9 +24,6 @@ GPIO.setmode(GPIO.BOARD)
 GPIO.setwarnings(False)
 GPIO.setup(led, GPIO.OUT)
 GPIO.setup(led2, GPIO.OUT)
-
-# Frame queue for recording
-frame_queue = Queue()
 
 # VideoStream class
 class VideoStream:
@@ -59,32 +54,37 @@ class VideoStream:
 
 def cleanup_old_videos():
     video_files = sorted(
-        [os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR) if f.endswith('.mp4')],
+        [os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR) if f.endswith('.avi')],
         key=os.path.getctime
     )
     while len(video_files) > MAX_VIDEO_FILES:
         os.remove(video_files[0])
         video_files.pop(0)
 
-# Record video from queue in background
+# Record video in background
 
-def record_bear_video_async():
+def record_bear_video_async(videostream, fps=30):
     def _record():
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.mp4')
-        frame_width = 640
-        frame_height = 480
-        out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), 20, (frame_width, frame_height))
+        filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.avi')
+        frame_width = int(videostream.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(videostream.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'XVID'), fps, (frame_width, frame_height))
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.7
+        font_color = (0, 0, 255)
+        thickness = 2
+        line_type = cv2.LINE_AA
 
         start_time = time.time()
         while time.time() - start_time < VIDEO_DURATION:
-            if not frame_queue.empty():
-                frame = frame_queue.get()
-                if frame is not None:
-                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    cv2.putText(frame, "Bear Scare Horn Activated", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-                    cv2.putText(frame, now, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-                    out.write(frame)
+            frame = videostream.read()
+            if frame is not None:
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cv2.putText(frame, "Bear Scare Horn Activated", (10, 30), font, font_scale, font_color, thickness, line_type)
+                cv2.putText(frame, now, (10, 60), font, font_scale, font_color, thickness, line_type)
+                out.write(frame)
         out.release()
         cleanup_old_videos()
 
@@ -151,81 +151,73 @@ freq = cv2.getTickFrequency()
 videostream = VideoStream(resolution=(imW, imH), framerate=30).start()
 time.sleep(1)
 
-recording = False
+# Queue for frame processing
+frame_queue = queue.Queue(maxsize=10)
 
+def object_detection_thread():
+    while True:
+        if not frame_queue.empty():
+            frame = frame_queue.get()
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_resized = cv2.resize(frame_rgb, (width, height))
+            input_data = np.expand_dims(frame_resized, axis=0)
+
+            if floating_model:
+                input_data = (np.float32(input_data) - input_mean) / input_std
+
+            interpreter.set_tensor(input_details[0]['index'], input_data)
+            interpreter.invoke()
+
+            boxes = interpreter.get_tensor(output_details[0]['index'])[0]
+            classes = interpreter.get_tensor(output_details[1]['index'])[0]
+            scores = interpreter.get_tensor(output_details[2]['index'])[0]
+
+            bear_detected = False
+            for i in range(len(scores)):
+                if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
+                    ymin = int(max(1, (boxes[i][0] * imH)))
+                    xmin = int(max(1, (boxes[i][1] * imW)))
+                    ymax = int(min(imH, (boxes[i][2] * imH)))
+                    xmax = int(min(imW, (boxes[i][3] * imW)))
+                    cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (10, 255, 0), 2)
+
+                    object_name = labels[int(classes[i])]
+                    label = '%s: %d%%' % (object_name, int(scores[i]*100))
+                    labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                    label_ymin = max(ymin, labelSize[1] + 10)
+                    cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10),
+                                  (xmin+labelSize[0], label_ymin+baseLine-10),
+                                  (255, 255, 255), cv2.FILLED)
+                    cv2.putText(frame, label, (xmin, label_ymin-7),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+                    
+                    if object_name == "bear" and int(scores[i]*100) > 55:
+                        bear_detected = True
+
+            # Show the frame with detection results
+            cv2.imshow('Object detector', frame)
+
+            if bear_detected:
+                print("BEAR!!!! - Recording Started")
+                GPIO.output(led, GPIO.HIGH)
+                GPIO.output(led2, GPIO.HIGH)
+                led_count = 0
+                record_bear_video_async(videostream)
+
+            # Add a small delay to ensure smooth detection
+            time.sleep(0.01)
+
+# Start the object detection thread with higher priority
+Thread(target=object_detection_thread, daemon=True).start()
+
+# Video capture loop
 while True:
-    t1 = cv2.getTickCount()
-    frame1 = videostream.read()
-    frame = frame1.copy()
-
-    # Add frame to queue for recording
-    if recording:
-        frame_queue.put(frame.copy())
-
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_resized = cv2.resize(frame_rgb, (width, height))
-    input_data = np.expand_dims(frame_resized, axis=0)
-
-    if floating_model:
-        input_data = (np.float32(input_data) - input_mean) / input_std
-
-    interpreter.set_tensor(input_details[0]['index'], input_data)
-    interpreter.invoke()
-
-    boxes = interpreter.get_tensor(output_details[0]['index'])[0]
-    classes = interpreter.get_tensor(output_details[1]['index'])[0]
-    scores = interpreter.get_tensor(output_details[2]['index'])[0]
-
-    bear_detected = False
-
-    for i in range(len(scores)):
-        if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
-            ymin = int(max(1, (boxes[i][0] * imH)))
-            xmin = int(max(1, (boxes[i][1] * imW)))
-            ymax = int(min(imH, (boxes[i][2] * imH)))
-            xmax = int(min(imW, (boxes[i][3] * imW)))
-            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (10, 255, 0), 2)
-
-            object_name = labels[int(classes[i])]
-            label = '%s: %d%%' % (object_name, int(scores[i]*100))
-            labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-            label_ymin = max(ymin, labelSize[1] + 10)
-            cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10),
-                          (xmin+labelSize[0], label_ymin+baseLine-10),
-                          (255, 255, 255), cv2.FILLED)
-            cv2.putText(frame, label, (xmin, label_ymin-7),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-
-            if object_name == "bear" and int(scores[i]*100) > 55:
-                bear_detected = True
-
-    if bear_detected and not recording:
-        print("BEAR!!!! - Recording Started")
-        GPIO.output(led, GPIO.HIGH)
-        GPIO.output(led2, GPIO.HIGH)
-        led_count = 0
-        recording = True
-        record_bear_video_async()
-        Thread(target=lambda: (time.sleep(VIDEO_DURATION), frame_queue.queue.clear(), globals().update(recording=False)), daemon=True).start()
-
-    led_count += 1
-    if led_count > 10:
-        GPIO.output(led, GPIO.LOW)
-        GPIO.output(led2, GPIO.LOW)
-    elif (led_count % 2) == 0:
-        GPIO.output(led, GPIO.LOW)
-        GPIO.output(led2, GPIO.LOW)
-    else:
-        GPIO.output(led, GPIO.HIGH)
-        GPIO.output(led2, GPIO.HIGH)
-
-    cv2.putText(frame, 'FPS: {0:.2f}'.format(frame_rate_calc), (30, 50),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2, cv2.LINE_AA)
-
-    cv2.imshow('Object detector', frame)
-    t2 = cv2.getTickCount()
-    time1 = (t2 - t1) / freq
-    frame_rate_calc = 1 / time1
+    frame = videostream.read()
+    if frame is not None and not frame_queue.full():
+        frame_queue.put(frame)
+    
+    # Add small delay to prevent hogging CPU
+    time.sleep(0.01)
 
     if cv2.waitKey(1) == ord('q'):
         break

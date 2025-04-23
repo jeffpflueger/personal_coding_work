@@ -6,13 +6,30 @@ from threading import Thread
 import shutil
 from datetime import datetime
 import RPi.GPIO as GPIO
-import tensorflow as tf
+import importlib.util
 
-# Constants
+# User Configuration
 VIDEO_DURATION = 30  # seconds
 VIDEO_DIR = "bear_videos"
 MAX_VIDEOS = 100
-STREAMING_ENABLED = False  # Toggle for streaming, default is off
+STREAMING_ENABLED = False  # Toggle to show streaming
+use_TPU = False  # Set to True if using Coral TPU
+GRAPH_NAME = "detect.tflite"
+
+# TensorFlow Lite / TPU Imports
+pkg = importlib.util.find_spec('tflite_runtime')
+if pkg:
+    from tflite_runtime.interpreter import Interpreter
+    if use_TPU:
+        from tflite_runtime.interpreter import load_delegate
+else:
+    from tensorflow.lite.python.interpreter import Interpreter
+    if use_TPU:
+        from tensorflow.lite.python.interpreter import load_delegate
+
+# Use TPU model if applicable
+if use_TPU and GRAPH_NAME == "detect.tflite":
+    GRAPH_NAME = "edgetpu.tflite"
 
 # Set up GPIO
 led = 40
@@ -27,7 +44,7 @@ GPIO.setup(led2, GPIO.OUT)
 if not os.path.exists(VIDEO_DIR):
     os.makedirs(VIDEO_DIR)
 
-# VideoStream class (unchanged)
+# VideoStream class
 class VideoStream:
     def __init__(self, resolution=(640, 480), framerate=30):
         self.stream = cv2.VideoCapture(0)
@@ -52,7 +69,7 @@ class VideoStream:
         self.stopped = True
         self.stream.release()
 
-# Function to delete oldest videos if over limit
+# Delete oldest videos if over limit
 def cleanup_old_videos():
     files = sorted([os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR)],
                    key=os.path.getctime)
@@ -60,13 +77,12 @@ def cleanup_old_videos():
         os.remove(files[0])
         files.pop(0)
 
-# Function to record video
+# Record video
 def record_bear_video(videostream, fps=30):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.avi')
     frame_width = int(videostream.stream.get(3))
     frame_height = int(videostream.stream.get(4))
-
     out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'XVID'), fps, (frame_width, frame_height))
     start_time = time.time()
     while time.time() - start_time < VIDEO_DURATION:
@@ -77,59 +93,59 @@ def record_bear_video(videostream, fps=30):
     print(f"[INFO] Video saved: {filename}")
     cleanup_old_videos()
 
-# TensorFlow Lite model inference (replacing the dummy function)
+# TensorFlow Lite detection
 def detect_bear(frame, interpreter, input_details, output_details):
-    # Preprocess frame
-    resized_frame = cv2.resize(frame, (300, 300))
+    input_shape = input_details[0]['shape']
+    height, width = input_shape[1], input_shape[2]
+    resized_frame = cv2.resize(frame, (width, height))
     input_data = np.expand_dims(resized_frame, axis=0)
-    input_data = np.float32(input_data)
+    if input_details[0]['dtype'] == np.float32:
+        input_data = (np.float32(input_data) - 127.5) / 127.5
 
-    # Set input tensor
     interpreter.set_tensor(input_details[0]['index'], input_data)
-    
-    # Run inference
     interpreter.invoke()
 
-    # Get output tensors
-    boxes = interpreter.get_tensor(output_details[0]['index'])[0]  # Bounding boxes
-    classes = interpreter.get_tensor(output_details[1]['index'])[0]  # Class labels
-    scores = interpreter.get_tensor(output_details[2]['index'])[0]  # Confidence scores
+    boxes = interpreter.get_tensor(output_details[0]['index'])[0]
+    classes = interpreter.get_tensor(output_details[1]['index'])[0]
+    scores = interpreter.get_tensor(output_details[2]['index'])[0]
 
     return boxes, classes, scores
 
-# Load TensorFlow Lite model
-model_path = "Sample_TFLite_model/detect.tflite"  # Path to your TensorFlow Lite model
-interpreter = tf.lite.Interpreter(model_path=model_path)
+# Load TFLite model
+model_path = GRAPH_NAME
+if use_TPU:
+    interpreter = Interpreter(model_path=model_path,
+                              experimental_delegates=[load_delegate('libedgetpu.so.1.0')])
+else:
+    interpreter = Interpreter(model_path=model_path)
 interpreter.allocate_tensors()
 
-# Get input and output details
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
-# Initialize videostream
+# Initialize video stream
 videostream = VideoStream(resolution=(800, 480), framerate=30).start()
 time.sleep(1)
 
 # Main loop
 while True:
-    t1 = cv2.getTickCount()
     frame = videostream.read()
-    
-    # Run object detection using TensorFlow Lite model
+
+    # Detection logic
     boxes, classes, scores = detect_bear(frame, interpreter, input_details, output_details)
 
-    # Iterate through detections
     for i in range(len(scores)):
-        if scores[i] > 0.5:  # Adjust score threshold as needed
-            object_name = "bear"  # Replace with actual label
-            if object_name == "bear" and int(scores[i] * 100) > 55:
+        if scores[i] > 0.5:
+            class_id = int(classes[i])
+            # Replace with actual mapping or label check
+            if class_id == 0:  # Assume 0 is bear
                 print("[ALERT] BEAR DETECTED!")
                 GPIO.output(led, GPIO.HIGH)
                 GPIO.output(led2, GPIO.HIGH)
                 led_count = 0
                 record_bear_video(videostream)
 
-    # LED Blinking logic (same as before)
+    # LED blinking logic
     led_count += 1
     if led_count > 10:
         GPIO.output(led, GPIO.LOW)
@@ -141,11 +157,10 @@ while True:
         GPIO.output(led, GPIO.HIGH)
         GPIO.output(led2, GPIO.HIGH)
 
-    # If streaming is enabled, show the frame
+    # Stream if enabled
     if STREAMING_ENABLED:
         cv2.imshow('Object detector', frame)
 
-    # Quit by pressing 'q'
     if cv2.waitKey(1) == ord('q'):
         break
 

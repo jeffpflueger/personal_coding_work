@@ -11,16 +11,16 @@ import importlib.util
 import RPi.GPIO as GPIO
 
 # --- Configuration ---
-VIDEO_DURATION = 30  # Seconds to record after detection
+VIDEO_DURATION = 10  # Seconds to record after detection
 VIDEO_DIR = "bear_videos"
 MAX_VIDEOS = 100
-FRAME_BUFFER_SECONDS = 2
+FRAME_BUFFER_SECONDS = 1
 FRAME_RATE = 30
 FRAME_BUFFER_SIZE = FRAME_RATE * FRAME_BUFFER_SECONDS
 STREAMING_ENABLED = False  # Toggle for streaming window
 use_TPU = False
 
-MODEL_NAME = 'model'
+MODEL_NAME = 'Sample_TFLite_model'
 GRAPH_NAME = 'detect.tflite'
 LABELMAP_NAME = 'labelmap.txt'
 min_conf_threshold = 0.5

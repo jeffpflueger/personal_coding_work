@@ -125,7 +125,7 @@ def record_bear_video(videostream, buffered_frames, fps=30):
     while time.time() - start_time < VIDEO_DURATION:
         frame = videostream.read()
         out.write(frame)
-        time.sleep(1 / fps)
+        time.sleep(1 / fps) # This line ensures real-time speed
 
     out.release()
     print(f"[INFO] Video saved: {filename}")
@@ -166,6 +166,7 @@ while True:
                 if not detected:
                     detected = True
                     record_bear_video(videostream, list(frame_buffer))
+                    frame_buffer.clear()
                 break
 
     # LED Blinking Logic

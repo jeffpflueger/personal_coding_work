@@ -127,7 +127,7 @@ def record_bear_video(videostream, buffered_frames, fps=30):
     # Write buffered frames first
     for bf in buffered_frames:
         annotate_text = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  BEAR DETECTED! AirHorn Activated"
-        cv2.putText(bf, annotate_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.putText(bf, annotate_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         out.write(bf)
 
     # Record new frames
@@ -135,7 +135,7 @@ def record_bear_video(videostream, buffered_frames, fps=30):
     while time.time() - start_time < VIDEO_DURATION:
         frame = videostream.read()
         annotate_text = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  BEAR DETECTED! AirHorn Activated"
-        cv2.putText(frame, annotate_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.putText(frame, annotate_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         out.write(frame)
 
     out.release()

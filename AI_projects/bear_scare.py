@@ -115,13 +115,13 @@ def cleanup_old_videos():
             break
             
 # Record video with pre-buffer
-def record_bear_video(videostream, buffered_frames, fps=30):
+def record_bear_video(videostream, buffered_frames, fps=15):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.mp4')
     frame_width = int(videostream.stream.get(3))
     frame_height = int(videostream.stream.get(4))
 
-    fps = 30
+    fps = 15
     out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
     # Write buffered frames first

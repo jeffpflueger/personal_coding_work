@@ -16,7 +16,7 @@ VIDEO_DURATION = 5  # Seconds to record after detection
 VIDEO_DIR = "bear_videos"
 MAX_VIDEOS = 100
 FRAME_BUFFER_SECONDS = 1
-FRAME_RATE = 60
+FRAME_RATE = 30
 FRAME_BUFFER_SIZE = FRAME_RATE * FRAME_BUFFER_SECONDS
 STREAMING_ENABLED = False  # Toggle for streaming window
 use_TPU = False
@@ -115,13 +115,13 @@ def cleanup_old_videos():
             break
             
 # Record video with pre-buffer
-def record_bear_video(videostream, buffered_frames, fps=60):
+def record_bear_video(videostream, buffered_frames, fps=30):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.mp4')
     frame_width = int(videostream.stream.get(3))
     frame_height = int(videostream.stream.get(4))
 
-    fps = 60
+    fps = 30
     out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
     # Write buffered frames first

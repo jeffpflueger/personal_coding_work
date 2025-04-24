@@ -9,9 +9,10 @@ from datetime import datetime
 from collections import deque
 import importlib.util
 import RPi.GPIO as GPIO
+import psutil
 
 # --- Configuration ---
-VIDEO_DURATION = 10  # Seconds to record after detection
+VIDEO_DURATION = 5  # Seconds to record after detection
 VIDEO_DIR = "bear_videos"
 MAX_VIDEOS = 100
 FRAME_BUFFER_SECONDS = 1
@@ -101,12 +102,18 @@ class VideoStream:
 
 # Delete oldest videos
 def cleanup_old_videos():
-    files = sorted([os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR)],
-                   key=os.path.getctime)
-    while len(files) > MAX_VIDEOS:
-        os.remove(files[0])
-        files.pop(0)
-
+    while True:
+        usage = psutil.disk_usage(VIDEO_DIR)
+        if usage.percent < 85:
+            break
+        files = sorted([os.path.join(VIDEO_DIR, f) for f in os.listdir(VIDEO_DIR)],
+                       key=os.path.getctime)
+        if files:
+            os.remove(files[0])
+            print(f"[INFO] Deleted old video: {files[0]}")
+        else:
+            break
+            
 # Record video with pre-buffer
 def record_bear_video(videostream, buffered_frames, fps=30):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -118,14 +125,18 @@ def record_bear_video(videostream, buffered_frames, fps=30):
 
     # Write buffered frames first
     for bf in buffered_frames:
+        annotate_text = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  BEAR DETECTED! AirHorn Activated"
+        cv2.putText(bf, annotate_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         out.write(bf)
 
     # Record new frames
     start_time = time.time()
     while time.time() - start_time < VIDEO_DURATION:
         frame = videostream.read()
+        annotate_text = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  BEAR DETECTED! AirHorn Activated"
+        cv2.putText(frame, annotate_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         out.write(frame)
-        time.sleep(1 / fps) # This line ensures real-time speed
+        time.sleep(1 / fps) # this ensures real-time playback
 
     out.release()
     print(f"[INFO] Video saved: {filename}")

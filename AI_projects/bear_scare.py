@@ -131,7 +131,8 @@ def record_bear_video(videostream, buffered_frames):
     # Calculate actual fps
     elapsed_time = time.time() - start_time
     total_frames = len(recorded_frames)
-    actual_fps = total_frames / (FRAME_BUFFER_SECONDS + elapsed_time)
+    raw_fps = total_frames / (FRAME_BUFFER_SECONDS + elapsed_time)
+    actual_fps = max(5, min(60, raw_fps))
 
     print(f"[INFO] Captured {total_frames} frames over {FRAME_BUFFER_SECONDS + elapsed_time:.2f} sec → FPS = {actual_fps:.2f}")
 
@@ -145,6 +146,7 @@ def record_bear_video(videostream, buffered_frames):
         out.write(frame)
 
     out.release()
+    print(f"[INFO] Captured {total_frames} frames over {FRAME_BUFFER_SECONDS + elapsed_time:.2f} sec → Raw FPS = {raw_fps:.2f}, Clamped FPS = {actual_fps:.2f}")
     print(f"[INFO] Video saved: {filename}")
     cleanup_old_videos()
     

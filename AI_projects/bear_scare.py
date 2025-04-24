@@ -115,34 +115,39 @@ def cleanup_old_videos():
             break
             
 # Record video with pre-buffer
-def record_bear_video(videostream, buffered_frames, fps=60):
+def record_bear_video(videostream, buffered_frames):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = os.path.join(VIDEO_DIR, f'bear_{timestamp}.mp4')
     frame_width = int(videostream.stream.get(3))
     frame_height = int(videostream.stream.get(4))
 
-    fps = 60
-    out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
-
-    # Write buffered frames first
-    for bf in buffered_frames:
-        annotate_text = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  BEAR DETECTED! AirHorn Activated"
-        cv2.putText(bf, annotate_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-        out.write(bf)
-
-    # Record new frames
+    # Capture new frames in real time
+    recorded_frames = list(buffered_frames)  # Start with pre-buffered frames
     start_time = time.time()
     while time.time() - start_time < VIDEO_DURATION:
         frame = videostream.read()
-        annotate_text = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  BEAR DETECTED! AirHorn Activated"
-        cv2.putText(frame, annotate_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        recorded_frames.append(frame)
+
+    # Calculate actual fps
+    elapsed_time = time.time() - start_time
+    total_frames = len(recorded_frames)
+    actual_fps = total_frames / (FRAME_BUFFER_SECONDS + elapsed_time)
+
+    print(f"[INFO] Captured {total_frames} frames over {FRAME_BUFFER_SECONDS + elapsed_time:.2f} sec → FPS = {actual_fps:.2f}")
+
+    # Save video with corrected FPS
+    out = cv2.VideoWriter(filename,
+                          cv2.VideoWriter_fourcc(*'mp4v'),
+                          actual_fps,
+                          (frame_width, frame_height))
+
+    for frame in recorded_frames:
         out.write(frame)
 
     out.release()
-    print(f"[INFO] Video saved: {filename} ")
-    print("Actual capture FPS:", videostream.stream.get(cv2.CAP_PROP_FPS))
+    print(f"[INFO] Video saved: {filename}")
     cleanup_old_videos()
-
+    
 # Start stream and buffer
 videostream = VideoStream(resolution=(800, 480), framerate=FRAME_RATE).start()
 frame_buffer = deque(maxlen=FRAME_BUFFER_SIZE)

@@ -121,6 +121,7 @@ def record_bear_video(videostream, buffered_frames, fps=30):
     frame_width = int(videostream.stream.get(3))
     frame_height = int(videostream.stream.get(4))
 
+    fps = 30
     out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
     # Write buffered frames first
@@ -136,10 +137,10 @@ def record_bear_video(videostream, buffered_frames, fps=30):
         annotate_text = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  BEAR DETECTED! AirHorn Activated"
         cv2.putText(frame, annotate_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         out.write(frame)
-        time.sleep(1 / fps) # this ensures real-time playback
 
     out.release()
-    print(f"[INFO] Video saved: {filename}")
+    print(f"[INFO] Video saved: {filename} ")
+    print("Actual capture FPS:", videostream.stream.get(cv2.CAP_PROP_FPS))
     cleanup_old_videos()
 
 # Start stream and buffer
